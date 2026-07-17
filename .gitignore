@@ -1,0 +1,6 @@
+.env
+.streamlit/secrets.toml
+__pycache__/
+data/*.db
+data/uploads/*
+!data/uploads/.gitkeep
