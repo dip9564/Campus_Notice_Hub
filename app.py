@@ -6,6 +6,7 @@ import sqlite3
 import base64
 import time
 import unicodedata
+from io import BytesIO
 from datetime import datetime, timedelta
 from pathlib import Path
 import streamlit as st
@@ -18,9 +19,10 @@ except ImportError:
     genai = None
 
 try:
-    from pypdf import PdfReader
+    from pypdf import PdfReader, PdfWriter
 except ImportError:
     PdfReader = None
+    PdfWriter = None
 
 BASE_DIR = Path(__file__).parent
 DATA_DIR = BASE_DIR / "data"
@@ -120,7 +122,21 @@ def save_notice(admin_name, title, description, notice_date, important_date, upl
         file_name = safe_name
         file_path = str(UPLOAD_DIR / f"{hashlib.sha256((now + safe_name).encode()).hexdigest()[:12]}_{safe_name}")
         file_type = uploaded_file.type
-        Path(file_path).write_bytes(uploaded_file.getvalue())
+        file_bytes = uploaded_file.getvalue()
+        if file_type == "application/pdf" and PdfReader and PdfWriter:
+            reader = PdfReader(BytesIO(file_bytes))
+            if len(reader.pages) > 1:
+                first_page = reader.pages[0]
+                first_page_text = (first_page.extract_text() or "").strip()
+                first_page_contents = first_page.get_contents()
+                if not first_page_text and first_page_contents is None:
+                    writer = PdfWriter()
+                    for page in reader.pages[1:]:
+                        writer.add_page(page)
+                    output = BytesIO()
+                    writer.write(output)
+                    file_bytes = output.getvalue()
+        Path(file_path).write_bytes(file_bytes)
 
     with get_connection() as connection:
         if notice_id:
@@ -262,11 +278,6 @@ def render_notice(notice, admin=False):
                 if notice["file_type"] in {"image/png", "image/jpeg"}:
                     st.image(notice["file_path"], use_container_width=True)
                 elif notice["file_type"] == "application/pdf":
-                    pdf_data = base64.b64encode(Path(notice["file_path"]).read_bytes()).decode("utf-8")
-                    st.markdown(
-                        f'<iframe src="data:application/pdf;base64,{pdf_data}" width="100%" height="600" type="application/pdf"></iframe>',
-                        unsafe_allow_html=True,
-                    )
                     st.pdf(notice["file_path"], height=700)
                 else:
                     st.warning("This attachment type cannot be previewed in the browser.")
