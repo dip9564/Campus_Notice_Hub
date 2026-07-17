@@ -7,8 +7,9 @@ import base64
 import time
 import unicodedata
 from io import BytesIO
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 import streamlit as st
 from dotenv import load_dotenv
 load_dotenv()
@@ -28,6 +29,7 @@ BASE_DIR = Path(__file__).parent
 DATA_DIR = BASE_DIR / "data"
 UPLOAD_DIR = DATA_DIR / "uploads"
 DB_PATH = DATA_DIR / "notices.db"
+APP_TIMEZONE = ZoneInfo("Asia/Kolkata")
 DATA_DIR.mkdir(exist_ok=True)
 UPLOAD_DIR.mkdir(exist_ok=True)
 
@@ -96,7 +98,7 @@ def list_notices():
 
 
 def remove_expired_notices():
-    today = datetime.now().date().isoformat()
+    today = datetime.now(APP_TIMEZONE).date().isoformat()
     with get_connection() as connection:
         expired_notices = connection.execute(
             "SELECT file_path FROM notices WHERE important_date IS NOT NULL AND important_date < ?",
@@ -112,7 +114,7 @@ def remove_expired_notices():
 
 
 def save_notice(admin_name, title, description, notice_date, important_date, uploaded_file, notice_id=None):
-    now = datetime.now().isoformat(timespec="seconds")
+    now = datetime.now(APP_TIMEZONE).isoformat(timespec="seconds")
     notice_timestamp = now
     file_name = file_path = file_type = None
     if uploaded_file:
@@ -183,11 +185,16 @@ def show_flash_message():
 
 def notice_is_new(notice):
     created_at = datetime.fromisoformat(notice["created_at"])
-    return datetime.now() - created_at < timedelta(hours=12)
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
+    return datetime.now(APP_TIMEZONE) - created_at.astimezone(APP_TIMEZONE) < timedelta(hours=12)
 
 
 def format_notice_timestamp(timestamp):
-    return datetime.fromisoformat(timestamp).strftime("%Y-%m-%d [%I:%M %p]")
+    timestamp_value = datetime.fromisoformat(timestamp)
+    if timestamp_value.tzinfo is None:
+        timestamp_value = timestamp_value.replace(tzinfo=timezone.utc)
+    return timestamp_value.astimezone(APP_TIMEZONE).strftime("%Y-%m-%d [%I:%M %p]")
 
 
 def extract_notice_context(notices):
@@ -302,7 +309,7 @@ def admin_page(notices):
         title = title_col.text_input("Notice title", value=existing["title"] if existing else "")
         admin_name = admin_col.text_input("Admin name", value=existing["admin_name"] if existing else "")
         description = st.text_area("Notice details", value=existing["description"] if existing else "")
-        current_notice_time = datetime.fromisoformat(existing["notice_date"]) if existing else datetime.now()
+        current_notice_time = datetime.fromisoformat(existing["notice_date"]) if existing else datetime.now(APP_TIMEZONE)
         st.text_input(
             "Notice date and time",
             value=current_notice_time.strftime("%Y-%m-%d %H:%M"),
@@ -310,7 +317,7 @@ def admin_page(notices):
         )
         deadline_date = st.date_input(
             "Deadline date",
-            value=datetime.fromisoformat(existing["important_date"]).date() if existing and existing["important_date"] else datetime.now().date(),
+            value=datetime.fromisoformat(existing["important_date"]).date() if existing and existing["important_date"] else datetime.now(APP_TIMEZONE).date(),
         )
         uploaded_file = st.file_uploader("Attachment (PNG, JPG, PDF)", type=["png", "jpg", "jpeg", "pdf"])
         submitted = st.form_submit_button("Update notice" if existing else "Publish notice", type="primary")
