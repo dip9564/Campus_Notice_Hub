@@ -267,6 +267,7 @@ def render_notice(notice, admin=False):
                         f'<iframe src="data:application/pdf;base64,{pdf_data}" width="100%" height="600" type="application/pdf"></iframe>',
                         unsafe_allow_html=True,
                     )
+                    st.pdf(notice["file_path"], height=700)
                 else:
                     st.warning("This attachment type cannot be previewed in the browser.")
         if admin:
