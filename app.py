@@ -50,7 +50,7 @@ div.stDownloadButton > button { border-radius: 18px !important; }
 @keyframes notice-bounce { 0%, 80%, 100% { transform: scale(.6); opacity: .4; } 40% { transform: scale(1); opacity: 1; } }
 .notice-cursor { animation: notice-blink 1s infinite; }
 @keyframes notice-blink { 50% { opacity: 0; } }
-[data-testid="stChatInput"] { position: fixed; bottom: 1.25rem; left: 50%; transform: translateX(-50%); width: min(850px, calc(100% - 2rem)); z-index: 1000; background: transparent; }
+[data-testid="stChatInput"] { position: fixed; bottom: 2.5rem; left: 50%; transform: translateX(-50%); width: min(850px, calc(100% - 2rem)); z-index: 1000; background: transparent; }
 [data-testid="stChatInput"] > div { border-radius: 28px; box-shadow: 0 4px 18px rgba(0, 0, 0, .25); }
 .notice-chat-row:last-of-type { margin-bottom: 10px; }
 </style>
@@ -69,6 +69,7 @@ def initialize_database():
             """CREATE TABLE IF NOT EXISTS notices (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 title TEXT NOT NULL,
+                admin_name TEXT NOT NULL DEFAULT 'Admin',
                 description TEXT NOT NULL,
                 notice_date TEXT NOT NULL,
                 important_date TEXT,
@@ -79,6 +80,9 @@ def initialize_database():
                 updated_at TEXT NOT NULL
             )"""
         )
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(notices)")}
+        if "admin_name" not in columns:
+            connection.execute("ALTER TABLE notices ADD COLUMN admin_name TEXT NOT NULL DEFAULT 'Admin'")
 
 
 def list_notices():
@@ -105,7 +109,7 @@ def remove_expired_notices():
             Path(notice["file_path"]).unlink(missing_ok=True)
 
 
-def save_notice(title, description, notice_date, important_date, uploaded_file, notice_id=None):
+def save_notice(admin_name, title, description, notice_date, important_date, uploaded_file, notice_id=None):
     now = datetime.now().isoformat(timespec="seconds")
     notice_timestamp = now
     file_name = file_path = file_type = None
@@ -124,20 +128,20 @@ def save_notice(title, description, notice_date, important_date, uploaded_file, 
             notice_timestamp = old["notice_date"]
             if file_path is None:
                 connection.execute(
-                    "UPDATE notices SET title=?, description=?, notice_date=?, important_date=?, updated_at=? WHERE id=?",
-                    (title, description, notice_timestamp, important_date.isoformat() if important_date else None, now, notice_id),
+                    "UPDATE notices SET admin_name=?, title=?, description=?, notice_date=?, important_date=?, updated_at=? WHERE id=?",
+                    (admin_name, title, description, notice_timestamp, important_date.isoformat() if important_date else None, now, notice_id),
                 )
             else:
                 connection.execute(
-                    "UPDATE notices SET title=?, description=?, notice_date=?, important_date=?, file_name=?, file_path=?, file_type=?, updated_at=? WHERE id=?",
-                    (title, description, notice_timestamp, important_date.isoformat() if important_date else None, file_name, file_path, file_type, now, notice_id),
+                    "UPDATE notices SET admin_name=?, title=?, description=?, notice_date=?, important_date=?, file_name=?, file_path=?, file_type=?, updated_at=? WHERE id=?",
+                    (admin_name, title, description, notice_timestamp, important_date.isoformat() if important_date else None, file_name, file_path, file_type, now, notice_id),
                 )
                 if old and old["file_path"]:
                     Path(old["file_path"]).unlink(missing_ok=True)
         else:
             connection.execute(
-                "INSERT INTO notices (title, description, notice_date, important_date, file_name, file_path, file_type, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (title, description, notice_timestamp, important_date.isoformat() if important_date else None, file_name, file_path, file_type, now, now),
+                "INSERT INTO notices (admin_name, title, description, notice_date, important_date, file_name, file_path, file_type, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (admin_name, title, description, notice_timestamp, important_date.isoformat() if important_date else None, file_name, file_path, file_type, now, now),
             )
 
 
@@ -163,7 +167,7 @@ def show_flash_message():
 
 def notice_is_new(notice):
     created_at = datetime.fromisoformat(notice["created_at"])
-    return datetime.now() - created_at < timedelta(days=1)
+    return datetime.now() - created_at < timedelta(hours=12)
 
 
 def format_notice_timestamp(timestamp):
@@ -184,19 +188,33 @@ def extract_notice_context(notices):
     return "\n\n---\n\n".join(context)
 
 
-def ask_gemini(question, notices):
+def ask_gemini(question, notices, chat_messages):
     api_key = os.getenv("GEMINI_API_KEY") or st.secrets.get("GEMINI_API_KEY", None)
     if not api_key or genai is None:
         return "Gemini is not configured yet. Add GEMINI_API_KEY to your environment or Streamlit secrets to enable AI answers."
     client = genai.Client(api_key=api_key)
-    prompt = f"""You are a helpful college notice assistant. Answer only from the notice context below. If the answer is not present, say that clearly. Mention the relevant notice title and date when possible. If the student asks for the latest notice, prioritize the notice marked '🔔🆕 LATEST NOTICE'. Keep the answer concise.\n\nNOTICE CONTEXT:\n{extract_notice_context(notices)}\n\nSTUDENT QUESTION: {question}"""
+    recent_messages = chat_messages[-20:]
+    conversation_context = "\n".join(
+        f"{message['role'].upper()}: {message['content']}"
+        for message in recent_messages
+    )
+    prompt = f"""You are a helpful college notice assistant. Answer the CURRENT STUDENT QUESTION only. Use the previous conversation only as extra context. Answer only from the notice context and conversation context. If the answer is not present, say that clearly. Mention the relevant notice title and date when possible. If the student asks for the latest notice, prioritize the notice marked '🔔🆕 LATEST NOTICE'. Keep the answer concise.
+
+NOTICE CONTEXT:
+{extract_notice_context(notices)}
+
+PREVIOUS CONVERSATION CONTEXT (last 20 messages from this chat only):
+{conversation_context}
+
+CURRENT STUDENT QUESTION:
+{question}"""
     try:
         contents = [prompt]
         for notice in notices:
             file_path = notice["file_path"]
             if file_path and Path(file_path).exists() and notice["file_type"] in {"application/pdf", "image/png", "image/jpeg"}:
                 contents.append(client.files.upload(file=file_path))
-        model_name = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite").removeprefix("models/")
+        model_name = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite").removeprefix("models/") or st.secrets.get("GEMINI_MODEL", None)
         response = client.models.generate_content(
             model=model_name,
             contents=contents,
@@ -215,6 +233,7 @@ def render_notice(notice, admin=False):
     with st.container(border=True):
         title = f"{notice['title']} 🔔🆕" if notice_is_new(notice) else notice["title"]
         st.subheader(title)
+        st.caption(f"Posted by: {notice['admin_name']}")
         st.caption(
             f"Published: {format_notice_timestamp(notice['notice_date'])}  •  "
             f"Deadline: {notice['important_date']}"
@@ -267,7 +286,9 @@ def admin_page(notices):
     edit_id = st.session_state.get("edit_notice_id")
     existing = next((notice for notice in notices if notice["id"] == edit_id), None)
     with st.form("notice_form", clear_on_submit=True):
-        title = st.text_input("Notice title", value=existing["title"] if existing else "")
+        title_col, admin_col = st.columns(2)
+        title = title_col.text_input("Notice title", value=existing["title"] if existing else "")
+        admin_name = admin_col.text_input("Admin name", value=existing["admin_name"] if existing else "")
         description = st.text_area("Notice details", value=existing["description"] if existing else "")
         current_notice_time = datetime.fromisoformat(existing["notice_date"]) if existing else datetime.now()
         st.text_input(
@@ -282,10 +303,10 @@ def admin_page(notices):
         uploaded_file = st.file_uploader("Attachment (PNG, JPG, PDF)", type=["png", "jpg", "jpeg", "pdf"])
         submitted = st.form_submit_button("Update notice" if existing else "Publish notice", type="primary")
         if submitted:
-            if not title.strip() or not description.strip():
-                st.error("Title and details are required.")
+            if not title.strip() or not admin_name.strip() or not description.strip():
+                st.error("Admin name, title, and details are required.")
             else:
-                save_notice(title.strip(), description.strip(), None, deadline_date, uploaded_file, edit_id)
+                save_notice(admin_name.strip(), title.strip(), description.strip(), None, deadline_date, uploaded_file, edit_id)
                 st.session_state.pop("edit_notice_id", None)
                 set_flash_message("Notice updated successfully." if edit_id else "Notice created successfully.")
                 st.rerun()
@@ -355,7 +376,7 @@ def student_page(notices):
                 '<div class="notice-chat-row assistant"><div class="notice-chat-bubble"><div class="notice-thinking">Thinking <div class="notice-thinking-dot"></div><div class="notice-thinking-dot"></div><div class="notice-thinking-dot"></div></div></div></div>',
                 unsafe_allow_html=True,
             )
-            answer = ask_gemini(question.strip(), notices)
+            answer = ask_gemini(question.strip(), notices, messages)
             thinking_placeholder.empty()
             response_placeholder = st.empty()
             typed_text = ""
@@ -389,7 +410,7 @@ def main():
     role = st.session_state.get("role_selector", "Student")
     if role == "Admin":
         password = st.sidebar.text_input("Admin password", type="password")
-        expected = os.getenv("ADMIN_PASSWORD", "admin123")
+        expected = os.getenv("ADMIN_PASSWORD") or st.secrets.get("ADMIN_PASSWORD", None)
         if password != expected:
             st.info("Enter the admin password to continue.")
             return
