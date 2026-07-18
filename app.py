@@ -267,7 +267,7 @@ def render_notice(notice, admin=False):
         )
         if notice["file_path"] and Path(notice["file_path"]).exists():
             attachment_key = f"show_attachment_{notice['id']}"
-            show_col, download_col,_ = st.columns((1,1,2))
+            show_col, download_col,_ = st.columns((1,1,1))
             if show_col.button(
                 "Hide attachment" if st.session_state.get(attachment_key) else "Show attachment",
                 key=f"attachment_button_{notice['id']}",
